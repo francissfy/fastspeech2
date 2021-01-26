@@ -84,7 +84,8 @@ DIR_PATH:
   CKPT: ""
   SYNTHESIS: ""
   EVAL: ""
-  LOG: ""
+  TRAIN_LOG: ""
+  VAL_LOG: ""
   TEST: ""
 
 LOGGING:

@@ -1,6 +1,6 @@
 import os
 from tqdm import tqdm
-from torchaudio.kaldi_io import read_mat_scp
+from kaldi_io.kaldi_io import read_mat_scp, write_mat, open_or_fd
 
 """
 decode the data from kaldi align
@@ -43,6 +43,13 @@ class KaldiFeats:
         mel_feat = self.mel_feats[key] if key in self.mel_feats else None
         variance_feat = self.variance_feats[key] if key in self.variance_feats else None
         return mel_feat, variance_feat
+
+
+def write_ark_scp(output_name, kmat_dict: dict):
+    ark_scp_output = f"ark:| copy-feats --compress=true ark:- ark,scp:{output_name}.ark,{output_name}.scp"
+    with open_or_fd(ark_scp_output, "wb") as f:
+        for k, mat in kmat_dict.items():
+            write_mat(f, mat, key=k)
 
 
 def preprocess_kaldi_scp(kaldi_scp, fixed_scp, ark_base_dir):

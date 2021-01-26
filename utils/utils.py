@@ -2,12 +2,13 @@ import torch
 from torch.nn import ConstantPad1d
 
 
-def const_pad_tensors_dim1(tensors, padding_value=0):
+def const_pad_tensors_dim1(tensors, max_len=None, padding_value=0):
     """
     tensors: list of tensor in shape: [L, W]
+        or tensor with shape: [B, L, W]
+    padding and cat to [B, MAX_L, W]
     """
-    max_len = max([t.shape[0] for t in tensors])
-    print(max_len)
+    max_len = max([t.shape[0] for t in tensors]) if max_len is None else max_len
     for i, t in enumerate(tensors):
         pad_len = max_len-t.shape[0]
         t = t.unsqueeze(dim=0)

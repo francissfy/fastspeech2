@@ -55,13 +55,14 @@ def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):
     return torch.FloatTensor(sinusoid_table)
 
 
-def get_mask_from_lengths(lengths, max_len=None, device=None):
+def get_mask_from_lengths(lengths, max_len=None):
+    """
+    lengths: tensor
+    """
     batch_size = lengths.shape[0]
     if max_len is None:
         max_len = torch.max(lengths).item()
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).to(device)
+    ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).to(lengths.device)
     mask = (ids > lengths.unsqueeze(1).expand(-1, max_len))
     return mask
 

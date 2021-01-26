@@ -37,3 +37,13 @@ class TensorBoardLogger(SummaryWriter):
         self.add_scalar("loss/duration", duration_loss, current_step)
         self.add_scalar("loss/pitch", pitch_loss, current_step)
         self.add_scalar("loss/energy", energy_loss, current_step)
+
+    def log_mel_spectrogram(self, current_step, mel_output, mel_target):
+        self.add_image("mel_output",
+                       plot_spectrogram_to_numpy(mel_output.data.cpu().numpy()),
+                       current_step,
+                       dataformats="HWC")
+        self.add_image("mel_target",
+                       plot_spectrogram_to_numpy(mel_target.data.cpu().numpy()),
+                       current_step,
+                       dataformats="HWC")
