@@ -1,67 +1,106 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from network.utils import ConvNorm, get_mask_from_lengths
+from network.utils import ConvNorm, get_mask_from_lengths, pad_list
 from network.utils import get_device
 from collections import OrderedDict
-from utils.utils import const_pad_tensors_dim1
+from tools.utils import const_pad_tensors_dim1
 
 
+# use LR from espnet
 class LengthRegulator(nn.Module):
-    def __init__(self):
+    def __init__(self,
+                 pad_value: float = 0.0):
         super(LengthRegulator, self).__init__()
+        self.pad_value = pad_value
 
-    def forward(self, x, duration, max_mel_len=None):
-        expanded_tensors = []
-        for d, t in zip(duration, x):   # t: [L, W]
-            target_len = int(d.item())
-            t = t.expand((target_len, -1))
-            expanded_tensors.append(t)
-        padded_tensor = const_pad_tensors_dim1(expanded_tensors, max_mel_len)
-        return padded_tensor
+    def forward(self,
+                xs: torch.Tensor,
+                durations: torch.LongTensor,
+                input_lengths: torch.LongTensor,
+                duration_control: float = 1.0):
+        if durations != 1.0:
+            duration_control = torch.round(durations.float() * duration_control).long()
+        xs = [x[:in_len] for x, in_len in zip(xs, input_lengths)]
+        ds = [d[:in_len] for d, in_len in zip(durations, input_lengths)]
+        xs = [self._repeat_one_sequence(x, d) for x, d in zip(xs, ds)]
+        return pad_list(xs, self.pad_value)
+
+    def _repeat_one_sequence(self,
+                             x: torch.Tensor,
+                             d: torch.LongTensor):
+        if d.sum() == 0:
+            # FIXME
+            d = d.fill_(1)
+        return torch.cat([x_.repeat(int(d_), 1) for x_, d_ in zip(x, d) if d_ != 0], dim=0)
 
 
+# espnet implementation, don't use torch.Embedding
+class VarianceEmbedding(nn.Module):
+    def __init__(self, in_dim, out_dim, embed_kernel_size):
+        super(VarianceEmbedding, self).__init__()
+        self.conv = ConvNorm(in_channels=in_dim,
+                             out_channels=out_dim,
+                             kernel_size=embed_kernel_size,
+                             padding=(embed_kernel_size-1)//2)
+        self.dropout = nn.Dropout(embed_kernel_size)
+
+    def forward(self, x: torch.Tensor):
+        x = self.conv(x)
+        x = self.dropout(x)
+        return x
+
+
+# use espnet implementation
 class VariancePredictor(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self,
+                 in_dim: int,
+                 out_dim: int,
+                 n_layers: int = 2,
+                 n_chans: int = 384,
+                 kernel_size: int = 3,
+                 bias: bool = True,
+                 dropout_rate: float = 0.5):
         super(VariancePredictor, self).__init__()
 
-        self.input_size = cfg.MODEL.ENCODER.HIDDEN
-        variance_param = cfg.MODEL.VARIANCE_PREDICTOR
-        self.filter_size = variance_param.FILTER_SIZE
-        self.kernel_size = variance_param.KERNEL_SIZE
-        self.conv_output_size = variance_param.FILTER_SIZE
-        self.dropout = variance_param.DROPOUT
+        self.conv = nn.ModuleList([
+            nn.Sequential(
+                ConvNorm(in_channels=in_dim,
+                         out_channels=n_chans,
+                         kernel_size=kernel_size,
+                         padding=(kernel_size-1)//2,
+                         bias=bias),
+                nn.ReLU(),
+                # FIXME
+                nn.LayerNorm(n_chans),
+                nn.Dropout(dropout_rate)
+            ) for in_dim in ([in_dim]+[n_chans] * (n_layers-1))
+        ])
+        self.linear = nn.Linear(n_chans, out_dim)
 
-        self.conv_layer = nn.Sequential(OrderedDict([
-            ("conv1d_1", ConvNorm(
-                in_channels=self.input_size,
-                out_channels=self.filter_size,
-                kernel_size=self.kernel_size,
-                padding=(self.kernel_size - 1) // 2
-            )),
-            ("relu_1", nn.ReLU()),
-            ("layer_norm_1", nn.LayerNorm(self.filter_size)),
-            ("dropout_1", nn.Dropout(self.dropout)),
-            ("conv1d_2", ConvNorm(
-                in_channels=self.filter_size,
-                out_channels=self.filter_size,
-                kernel_size=self.kernel_size,
-                padding=1
-            )),
-            ("relu_2", nn.ReLU()),
-            ("layer_norm_2", nn.LayerNorm(self.filter_size)),
-            ("dropout_2", nn.Dropout(self.dropout)),
-        ]))
-        self.linear_layer = nn.Linear(self.conv_output_size, 1)
-
-    def forward(self, encoder_output, mask):
-        out = self.conv(encoder_output)
-        out = self.linear_layer(out)
-        out = out.squeeze(-1)
+    def forward(self,
+                x: torch.Tensor,
+                mask: torch.Tensor = None):
+        x = x.transpose(1, -1)
+        for f in self.conv:
+            x = f(x)
+        x = self.linear(x.transpose(1, -1))
 
         if mask is not None:
-            out = out.masked_fill(mask, 0.0)
-        return out
+            x = x.masked_fill(mask, 0.0)
+        return x
+
+
+# espnet variance adapter
+class VA(nn.Module):
+    def __init__(self):
+        super(VA, self).__init__()
+
+    def forward(self):
+        pass
+
+    def inference(self):
+        pass
 
 
 class VarianceAdaptor(nn.Module):

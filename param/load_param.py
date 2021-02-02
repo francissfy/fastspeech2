@@ -30,6 +30,7 @@ def to_namespace_recursive(cfg: dict) -> Namespace:
     return ns
 
 
+
 if __name__ == "__main__":
     config_file = "/Users/francis/code/fastspeech2/param/config.yaml"
     cfg = load_config(config_file)

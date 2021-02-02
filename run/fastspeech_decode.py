@@ -1,9 +1,9 @@
 import os
 import torch
-from utils.dataset import FSDataset
+from tools.dataset import FSDataset
 from torch.utils.data import DataLoader
-from utils.logger import TensorBoardLogger
-from utils.kaldi_io_utils import write_ark_scp
+from tools.logger import TensorBoardLogger
+from tools.kaldi_io_utils import write_ark_scp
 
 
 def decode(cfg, model, current_step, criterion):
@@ -33,9 +33,5 @@ def decode(cfg, model, current_step, criterion):
                                                                                         duration_control=1.0,
                                                                                         pitch_control=1.0,
                                                                                         energy_control=1.0)
-
-
-
-
-
+        # WIP
     model.train()

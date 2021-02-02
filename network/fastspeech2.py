@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from network.encoder import Encoder
 from network.decoder import Decoder

@@ -14,7 +14,7 @@ class Decoder(nn.Module):
         self.decoder_hidden = decoder_ns.HIDDEN
         d_word_vec = decoder_ns.HIDDEN
         n_layers = decoder_ns.LAYER
-        n_head = decoder_ns.N_HEAD
+        n_head = decoder_ns.HEAD
         d_k = decoder_ns.HIDDEN
         d_v = decoder_ns.HIDDEN
         d_model = decoder_ns.HIDDEN

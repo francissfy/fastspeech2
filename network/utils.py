@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from typing import List
 
 
 class ConvNorm(nn.Module):
@@ -62,9 +63,22 @@ def get_mask_from_lengths(lengths, max_len=None):
     batch_size = lengths.shape[0]
     if max_len is None:
         max_len = torch.max(lengths).item()
+    if isinstance(max_len, torch.Tensor):
+        max_len = max_len.item()
     ids = torch.arange(0, max_len).unsqueeze(0).expand(batch_size, -1).to(lengths.device)
     mask = (ids > lengths.unsqueeze(1).expand(-1, max_len))
     return mask
+
+
+def pad_list(xs: List[torch.Tensor],
+             pad_value: float):
+    n_batch = len(xs)
+    max_len = max(x.shape[0] for x in xs)
+
+    pad = xs[0].new(n_batch, max_len, *(xs[0].shape[1:])).fill_(pad_value)
+    for i in range(n_batch):
+        pad[i, :xs[i].shape[0]] = xs[i]
+    return pad
 
 
 def pad(input_ele, mel_max_length=None):
@@ -77,7 +91,7 @@ def pad(input_ele, mel_max_length=None):
         elif len(batch.shape) == 2:
             one_batch_padded = F.pad(batch, (0, 0, 0, max_len - batch.size(0)), "constant", 0.0)
         else:
-            assert 0, "network: utils: pad: len(batch.shape) error!"
+            assert 0, "network: tools: pad: len(batch.shape) error!"
         out_list.append(one_batch_padded)
     out_padded = torch.stack(out_list)
     return out_padded

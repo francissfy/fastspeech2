@@ -15,7 +15,7 @@ class Encoder(nn.Module):
         self.encoder_hidden = encoder_ns.HIDDEN
         d_word_vec = encoder_ns.HIDDEN
         n_layers = encoder_ns.LAYER
-        n_head = encoder_ns.N_HEAD
+        n_head = encoder_ns.HEAD
         d_k = encoder_ns.HIDDEN
         d_v = encoder_ns.HIDDEN
         d_model = encoder_ns.HIDDEN
@@ -53,7 +53,7 @@ class Encoder(nn.Module):
             enc_output = self.src_word_emb(src_seq) + self.position_enc[:, :max_len, :].expand(batch_size, -1, -1)
 
         for enc_layer in self.layer_stack:
-            enc_output, enc_self_attn = enc_layer(enc_output, mask=mask, self_atten_mask=self_atten_mask)
+            enc_output, enc_self_attn = enc_layer(enc_output, mask=mask, self_attn_mask=self_atten_mask)
             if return_attns:
                 enc_self_attn_list.append(enc_self_attn)
 

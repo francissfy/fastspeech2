@@ -121,7 +121,7 @@ class PostNet(nn.Module):
     def __init__(self, cfg):
         super(PostNet, self).__init__()
 
-        n_mel_channels = cfg.AUDIO.N_MEL_CHANNELS,
+        n_mel_channels = cfg.AUDIO.N_MEL_CHANNELS
 
         post_param = cfg.MODEL.POSTNET
         postnet_embedding_dim = post_param.EMBEDDING_DIM

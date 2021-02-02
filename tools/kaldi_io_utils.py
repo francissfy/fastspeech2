@@ -36,6 +36,11 @@ class KaldiFeats:
             for k, v in data:
                 self.variance_feats[k] = v
 
+    def get_keys(self):
+        keys = self.mel_feats.keys()
+        keys = [k for k in keys]
+        return keys
+
     def __len__(self):
         return len(self.mel_feats)
 

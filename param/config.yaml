@@ -1,14 +1,3 @@
-DATASET:
-  NAME: "LJSpeech"
-  TRAIN:
-    MEL_SCP: ""
-    VARIANCE_SCP: ""
-    JSON_DATA: ""
-  VAL:
-    MEL_SCP: ""
-    VARIANCE_SCP: ""
-    JSON_DATA: ""
-
 TEXT:
   CLEANER: ["english_cleaners"]
 
@@ -57,7 +46,7 @@ MODEL:
     N_CONVOLUTIONS: 5
 
   MAX_SEQ_LEN: 1000
-  N_SRC_VOCAB: -1
+  N_SRC_VOCAB: 152
 
 QUANTIZATION:
   F0_MIN: 71.0

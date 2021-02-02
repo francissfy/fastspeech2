@@ -2,8 +2,8 @@ import json
 import math
 import numpy as np
 from torch.utils.data import Dataset
-from utils.kaldi_io_utils import KaldiFeats
-from utils.utils import const_pad_tensors_dim1
+from tools.kaldi_io_utils import KaldiFeats
+from tools.utils import const_pad_tensors_dim1
 
 
 class FSDataset(Dataset):
