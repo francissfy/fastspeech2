@@ -29,12 +29,23 @@ class ConvNorm(nn.Module):
             dilation=dilation,
             bias=bias
         )
-        nn.init.xavier_uniform(self.conv.weight,
+        nn.init.xavier_normal_(self.conv.weight,
                                gain=nn.init.calculate_gain(w_init_gain))
 
     def forward(self, x):
         output = self.conv(x)
         return output
+
+
+class LayerNorm(nn.LayerNorm):
+    def __init__(self, nout, dim=-1):
+        super(LayerNorm, self).__init__(nout, eps=1e-12)
+        self.dim = dim
+
+    def forward(self, x):
+        if self.dim == -1:
+            return super(LayerNorm, self).forward(x)
+        return super(LayerNorm, self).forward(x.transpose(1, -1)).transpose(1, -1)
 
 
 def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):

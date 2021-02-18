@@ -1,0 +1,7 @@
+# number of attention transformer dimensions
+adim: 384
+# number of heads for multi head attention
+aheads: 4
+# number of encoder layers
+elayers: 6
+#

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from network.utils import ConvNorm, get_mask_from_lengths, pad_list
+from network.utils import ConvNorm, LayerNorm, get_mask_from_lengths, pad_list
 from network.utils import get_device
 from collections import OrderedDict
 from tools.utils import const_pad_tensors_dim1
@@ -19,8 +19,8 @@ class LengthRegulator(nn.Module):
                 durations: torch.LongTensor,
                 input_lengths: torch.LongTensor,
                 duration_control: float = 1.0):
-        if durations != 1.0:
-            duration_control = torch.round(durations.float() * duration_control).long()
+        if duration_control != 1.0:
+            durations = torch.round(durations.float() * duration_control).long()
         xs = [x[:in_len] for x, in_len in zip(xs, input_lengths)]
         ds = [d[:in_len] for d, in_len in zip(durations, input_lengths)]
         xs = [self._repeat_one_sequence(x, d) for x, d in zip(xs, ds)]
@@ -37,13 +37,17 @@ class LengthRegulator(nn.Module):
 
 # espnet implementation, don't use torch.Embedding
 class VarianceEmbedding(nn.Module):
-    def __init__(self, in_dim, out_dim, embed_kernel_size):
+    def __init__(self,
+                 in_dim: int,
+                 out_dim: int,
+                 embed_kernel_size: int,
+                 embed_droput_rate: float):
         super(VarianceEmbedding, self).__init__()
         self.conv = ConvNorm(in_channels=in_dim,
                              out_channels=out_dim,
                              kernel_size=embed_kernel_size,
                              padding=(embed_kernel_size-1)//2)
-        self.dropout = nn.Dropout(embed_kernel_size)
+        self.dropout = nn.Dropout(embed_droput_rate)
 
     def forward(self, x: torch.Tensor):
         x = self.conv(x)
@@ -71,8 +75,7 @@ class VariancePredictor(nn.Module):
                          padding=(kernel_size-1)//2,
                          bias=bias),
                 nn.ReLU(),
-                # FIXME
-                nn.LayerNorm(n_chans),
+                LayerNorm(n_chans, dim=1),
                 nn.Dropout(dropout_rate)
             ) for in_dim in ([in_dim]+[n_chans] * (n_layers-1))
         ])
@@ -91,18 +94,123 @@ class VariancePredictor(nn.Module):
         return x
 
 
+class DurationPredictor(nn.Module):
+    def __init__(self,
+                 in_dim: int,
+                 n_layers: int = 2,
+                 n_chans: int = 384,
+                 kernel_size: int = 3,
+                 dropout_rate: float = 0.1,
+                 offset: float = 1.0):
+        super(DurationPredictor, self).__init__()
+        self.offset = offset
+        self.conv = nn.ModuleList([
+            nn.Sequential(
+                ConvNorm(in_channels=in_chans,
+                         out_channels=n_chans,
+                         kernel_size=kernel_size,
+                         padding=(kernel_size-1)//2),
+                nn.ReLU(),
+                LayerNorm(n_chans, dim=-1),
+                nn.Dropout(dropout_rate)
+            )
+            for in_chans in ([in_dim]+[n_chans]*(n_layers-1))
+        ])
+        self.linear = nn.Linear(n_chans, 1)
+
+    def forward(self,
+                xs: torch.Tensor,
+                x_masks: torch.Tensor = None):
+        xs = xs.transpose(1, 2)
+        for f in self.conv:
+            xs = f(xs)
+        xs = self.linear(xs)
+        if x_masks is not None:
+            xs = xs.masked_fill(x_masks, 0.0)
+        return xs
+
+    def inference(self,
+                xs: torch.Tensor,
+                x_masks: torch.Tensor = None):
+        xs = xs.transpose(1, 2)
+        for f in self.conv:
+            xs = f(xs)
+        xs = self.linear(xs)
+        xs = torch.clamp(torch.round(xs.exp()-self.offset), min=0).long()
+        if x_masks is not None:
+            xs = xs.masked_fill(x_masks, 0.0)
+        return xs
+
+
 # espnet variance adapter
-class VA(nn.Module):
-    def __init__(self):
-        super(VA, self).__init__()
+class VarianceAdaptor(nn.Module):
+    def __init__(self,
+                 adim: int,
+                 pitch_dim: int = 4,
+                 energy_dim: int = 1,
+                 pitch_embed_kernel_size: int = 1,
+                 pitch_embed_dropout_rate: float = 0.0,
+                 energy_embed_kernel_size: int = 1,
+                 energy_embed_dropout_rate: float = 0.0,
+                 duration_predictor_layers: int = 2,
+                 duration_predictor_chans: int = 256,
+                 duration_predictor_kernel_size: int = 3,
+                 duration_predictor_dropout_rate: float = 0.1):
 
-    def forward(self):
-        pass
+        super(VarianceAdaptor, self).__init__()
+        self.duration_predictor = DurationPredictor(in_dim=adim,
+                                                    n_layers=duration_predictor_layers,
+                                                    n_chans=duration_predictor_chans,
+                                                    kernel_size=duration_predictor_kernel_size,
+                                                    dropout_rate=duration_predictor_dropout_rate)
+        self.length_regulator = LengthRegulator()
 
-    def inference(self):
-        pass
+        self.pitch_predictor = VariancePredictor(in_dim=adim,
+                                                 out_dim=pitch_dim)
+        self.pitch_embed = VarianceEmbedding(in_dim=pitch_dim,
+                                             out_dim=adim,
+                                             embed_kernel_size=pitch_embed_kernel_size,
+                                             embed_droput_rate=pitch_embed_dropout_rate)
+
+        self.energy_predictor = VariancePredictor(in_dim=adim,
+                                                  out_dim=energy_dim)
+        self.energy_embed = VarianceEmbedding(in_dim=energy_dim,
+                                              out_dim=adim,
+                                              embed_kernel_size=energy_embed_kernel_size,
+                                              embed_droput_rate=energy_embed_dropout_rate)
+
+    def forward(self,
+                hs: torch.Tensor,
+                durations: torch.LongTensor,
+                input_lengths: torch.LongTensor,
+                pitch_target: torch.Tensor,
+                energy_target: torch.Tensor,
+
+                duration_mask: torch.Tensor,
+                variance_mask: torch.Tensor):
+        hs = self.length_regulator.forward(hs, durations, input_lengths)
+        # TODO
+        pitch_embed = self.pitch_embed.forward(pitch_target.transpose(1, 2)).transpose(1, 2)
+        energy_embed = self.energy_embed(energy_target.transpose(1, 2)).transpose(1, 2)
+        hs += pitch_embed + energy_embed
+        return hs
+
+    def inference(self,
+                  hs: torch.Tensor,
+                  input_lengths: torch.LongTensor,
+                  duration_masks: torch.Tensor,
+                  variance_masks: torch.Tensor):
+        duration_outs = self.duration_predictor.forward(hs, duration_masks)
+        hs = self.length_regulator.forward(hs, duration_outs, input_lengths)
+        pitch_outs = self.pitch_predictor.forward(hs, variance_masks)
+        pitch_embed = self.pitch_embed.forward(pitch_outs.transpose(1, 2)).transpose(1, 2)
+        energy_outs = self.energy_predictor.forward(hs, variance_masks)
+        energy_embed = self.energy_embed.forward(energy_outs.transpose(1, 2)).transpose(1, 2)
+        hs += energy_embed + pitch_embed
+        return hs, pitch_outs, energy_outs
 
 
+"""deprecated
 class VarianceAdaptor(nn.Module):
     def __init__(self, cfg):
         super(VarianceAdaptor, self).__init__()
@@ -186,3 +294,4 @@ class VarianceAdaptor(nn.Module):
         )
         x = x + pitch_embedding + energy_embedding
         return x, log_duration_prediction, pitch_prediction, energy_prediction, mel_lengths, mel_mask
+    """
