@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
-import numpy as np
-from network.utils import ConvNorm, LayerNorm, get_mask_from_lengths, pad_list
-from network.utils import get_device
-from collections import OrderedDict
-from tools.utils import const_pad_tensors_dim1
+from network.utils import ConvNorm, LayerNorm, pad_list
 
 
 # use LR from espnet
@@ -185,15 +181,16 @@ class VarianceAdaptor(nn.Module):
                 input_lengths: torch.LongTensor,
                 pitch_target: torch.Tensor,
                 energy_target: torch.Tensor,
-
                 duration_mask: torch.Tensor,
                 variance_mask: torch.Tensor):
+        duration_outs = self.duration_predictor.forward(hs, duration_mask)
         hs = self.length_regulator.forward(hs, durations, input_lengths)
-        # TODO
+        pitch_outs = self.pitch_predictor.forward(hs, variance_mask)
         pitch_embed = self.pitch_embed.forward(pitch_target.transpose(1, 2)).transpose(1, 2)
+        energy_outs = self.energy_predictor.forward(hs, variance_mask)
         energy_embed = self.energy_embed(energy_target.transpose(1, 2)).transpose(1, 2)
         hs += pitch_embed + energy_embed
-        return hs
+        return hs, duration_outs, pitch_outs, energy_outs
 
     def inference(self,
                   hs: torch.Tensor,
@@ -207,91 +204,4 @@ class VarianceAdaptor(nn.Module):
         energy_outs = self.energy_predictor.forward(hs, variance_masks)
         energy_embed = self.energy_embed.forward(energy_outs.transpose(1, 2)).transpose(1, 2)
         hs += energy_embed + pitch_embed
-        return hs, pitch_outs, energy_outs
-
-
-"""deprecated
-class VarianceAdaptor(nn.Module):
-    def __init__(self, cfg):
-        super(VarianceAdaptor, self).__init__()
-
-        self.duration_predictor = VariancePredictor(cfg)
-        self.pitch_predictor = VariancePredictor(cfg)
-        self.energy_predictor = VariancePredictor(cfg)
-        self.length_regulator = LengthRegulator()
-
-        quant_param = cfg.QUANTIZATION
-        self.log_offset = quant_param.LOG_OFFSET
-        encoder_param = cfg.MODEL.ENCODER
-
-        self.pitch_bins = nn.Parameter(
-            torch.exp(
-                torch.linspace(np.log(quant_param.F0_MIN), np.log(quant_param.F0_MAX), quant_param.N_BINS - 1)
-            ),
-            requires_grad=False
-        )
-        self.energy_bins = nn.Parameter(
-            torch.exp(
-                torch.linspace(np.log(quant_param.ENERGY_MIN), np.log(quant_param.ENERGY_MAX), quant_param.N_BINS - 1)
-            ),
-            requires_grad=False
-        )
-        self.pitch_embedding = nn.Embedding(quant_param.N_BINS, encoder_param.HIDDEN)
-        self.energy_embedding = nn.Embedding(quant_param.N_BINS, encoder_param.HIDDEN)
-
-    def forward(self,
-                x,
-                src_mask,
-                mel_mask,
-                duration_target,
-                pitch_target,
-                energy_target,
-                max_mel_len
-                ):
-        # use for loss
-        log_duration_prediction = self.duration_predictor(x, src_mask)
-        # use target duration
-        x, mel_len = self.length_regulator(x, duration_target, max_mel_len)
-
-        pitch_prediction = self.pitch_predictor(x, mel_mask)
-        pitch_embedding = self.pitch_embedding(
-            torch.bucketize(pitch_target, self.pitch_bins)
-        )
-
-        energy_prediction = self.energy_predictor(x, mel_mask)
-        energy_embedding = self.energy_embedding(
-            torch.bucketize(energy_target, self.energy_bins)
-        )
-
-        x = x + pitch_embedding + energy_embedding
-
-        return x, log_duration_prediction, pitch_prediction, energy_prediction, mel_len, mel_mask
-
-    def inference(self,
-                  x,
-                  src_mask,
-                  duration_control=1.0,
-                  pitch_control=1.0,
-                  energy_control=1.0):
-        # duration
-        log_duration_prediction = self.duration_predictor(x, src_mask)
-        duration_rounded = torch.clamp(
-            torch.round(torch.exp(log_duration_prediction) - self.log_offset) * duration_control,
-            min=0
-        )
-        # use duration as mel_lengths
-        mel_lengths = duration_rounded
-        x = self.length_regulator(x, duration_rounded)
-        mel_mask = get_mask_from_lengths(mel_lengths)
-        # pitch
-        pitch_prediction = self.pitch_predictor(x, mel_mask) * pitch_control
-        pitch_embedding = self.pitch_embedding(
-            torch.bucketize(pitch_prediction, self.pitch_bins)
-        )
-        energy_prediction = self.energy_predictor(x, mel_mask) * energy_control
-        energy_embedding = self.energy_embedding(
-            torch.bucketize(energy_prediction, self.energy_bins)
-        )
-        x = x + pitch_embedding + energy_embedding
-        return x, log_duration_prediction, pitch_prediction, energy_prediction, mel_lengths, mel_mask
-    """
+        return hs, duration_outs, pitch_outs, energy_outs

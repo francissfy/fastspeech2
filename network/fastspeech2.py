@@ -1,34 +1,13 @@
+import logging
 import torch
 import torch.nn as nn
-from network.encoder import Encoder
+import torch.nn.functional as F
+from network.encoder import Encoder, MultiHeadedAttention
 from network.encoder import PositionalEncoding, ScaledPositionalEncoding
-from network.variance_adaptor import VarianceAdaptor, VariancePredictor
-from network.utils import LayerNorm
+from network.variance_adaptor import VarianceAdaptor
+from network.utils import make_non_pad_mask, initialize, Reporter
 from network.loss import DurationPredictorLoss
-from typing import Union, Optional
-
-
-def initialize(model: nn.Module, init_type: str = "pytorch"):
-    if init_type == "pytorch":
-        return
-    for p in model.parameters():
-        if p.dim() > 1:
-            if init_type == "xavier_uniform":
-                nn.init.xavier_uniform_(p.data)
-            elif init_type == "xavier_normal":
-                nn.init.xavier_normal_(p.data)
-            elif init_type == "kaiming_uniform":
-                nn.init.kaiming_uniform_(p.data, nonlinearity="relu")
-            elif init_type == "kaiming_normal":
-                nn.init.kaiming_normal_(p.data, nonlinearity="relu")
-            else:
-                raise ValueError(f"unknown initialization: {init_type}")
-    for p in model.parameters():
-        if p.dim == 1:
-            p.data.zero_()
-    for m in model.modules():
-        if isinstance(m, (nn.Embedding, LayerNorm)):
-            m.reset_parameters()
+from tools.plot import TTSPlot
 
 
 class PostNet(nn.Module):
@@ -91,7 +70,6 @@ class FeedForwardTransformer(nn.Module):
                  transformer_enc_atten_dropout_rate: float = 0.0,
                  encoder_normalized_before: bool = True,
                  encoder_concat_after: bool = False,
-
                  # variance
                  pitch_embed_kernel_size: int = 1,
                  pitch_embed_dropout: float = 0.0,
@@ -109,26 +87,28 @@ class FeedForwardTransformer(nn.Module):
                  transformer_dec_atten_dropout_rate: float = 0.1,
                  decoder_normalized_before: bool = False,
                  decoder_concat_after: bool = False,
-
                  reduction_factor: int = 1,
                  # postnet
                  postnet_layers: int = 5,
                  postnet_filts: int = 5,
                  postnet_chans: int = 256,
                  postnet_dropout_rate: float = 0.5,
-
-                 use_batch_norm: bool = True,
-                 use_scaled_pos_enc: bool = True,
-
                  # init
                  transformer_init: str = "pytorch",
                  initial_encoder_alpha: float = 1.0,
                  initial_decoder_alpha: float = 1.0,
-
-
+                 # other
+                 use_masking: bool = True,
+                 use_batch_norm: bool = True,
+                 use_scaled_pos_enc: bool = True,
                  ):
         super(FeedForwardTransformer, self).__init__()
         self.use_scaled_pos_enc = use_scaled_pos_enc
+        self.reduction_factor = reduction_factor
+        self.odim = odim
+        self.use_masking = use_masking
+
+        self.reporter = Reporter()
 
         # encoder
         pos_enc_class = ScaledPositionalEncoding if use_scaled_pos_enc else PositionalEncoding
@@ -191,21 +171,9 @@ class FeedForwardTransformer(nn.Module):
         self.duration_criterion = DurationPredictorLoss()
         self.mse_criterion = nn.MSELoss()
 
-    def _forward(self,
-                 xs: torch.FloatTensor,
-                 ilens: torch.LongTensor,
-                 olens: torch.LongTensor = None,
-                 ds: torch.LongTensor = None,
-                 ps: torch.FloatTensor = None,
-                 es: torch.FloatTensor = None,
-                 in_masks: torch.LongTensor = None,
-                 out_masks: torch.LongTensor = None,
-                 is_inference: bool = False):
-        x_masks =
-
-
-    def _source_mask(self, ilens: torch.FloatTensor):
-        x_masks =
+    def _source_mask(self, ilens: torch.LongTensor):
+        x_masks = make_non_pad_mask(ilens).to(self.feat_out.weight.device)
+        return x_masks.unsqueeze(-2) & x_masks.unsqueeze(-1)
 
     def _reset_parameters(self,
                           init_type,
@@ -216,84 +184,172 @@ class FeedForwardTransformer(nn.Module):
             self.encoder.embed[-1].alpha.data = torch.tensor(init_enc_alpha)
             self.decoder.embed[-1].alpha.data = torch.tensor(init_dec_alpha)
 
+    def _forward(self,
+                 xs: torch.FloatTensor,
+                 ilens: torch.LongTensor,
+                 olens: torch.LongTensor = None,
+                 ds: torch.LongTensor = None,
+                 ps: torch.FloatTensor = None,
+                 es: torch.FloatTensor = None,
+                 in_masks: torch.LongTensor = None,
+                 out_masks: torch.LongTensor = None,
+                 is_inference: bool = False):
+        x_masks = self._source_mask(ilens)
+        hs, _ = self.encoder.forward(xs, x_masks)
 
+        # ignore spk embedding
 
-"""deprecated
-class Fastspeech2(nn.Module):
-    def __init__(self, cfg):
-        super(Fastspeech2, self).__init__()
+        d_masks = ~in_masks if in_masks is not None else None
+        v_masks = ~out_masks if out_masks is not None else None
+        if is_inference:
+            hs, d_outs, p_outs, e_outs = self.variance_adaptor.inference(hs, ilens, d_masks, v_masks)
+        else:
+            hs, d_outs, p_outs, e_outs = self.variance_adaptor.forward(hs, ds, ilens, ps, es, d_masks, v_masks)
 
-        self.use_postnet = True
-        self.device = get_device()
+        # forward decoder
+        if olens is not None:
+            if self.reduction_factor > 1:
+                olens_in = olens.new([olen // self.reduction_factor for olen in olens])
+            else:
+                olens_in = olens
+            h_masks = self._source_mask(olens_in)
+        else:
+            h_masks = None
+        zs, _ = self.decoder.forward(hs, h_masks)
+        before_outs = self.feat_out.forward(zs).view(zs.shape[0], -1, self.odim)
 
-        self.encoder = Encoder(cfg)
-        self.variance_adaptor = VarianceAdaptor(cfg)
+        # postnet
+        if self.postnet is None:
+            after_outs = before_outs
+        else:
+            after_outs = before_outs + self.postnet(before_outs.transpose(1, 2)).transpose(1, 2)
 
-        self.decoder = Decoder(cfg)
-
-        self.mel_linear = nn.Linear(cfg.MODEL.DECODER.HIDDEN, cfg.AUDIO.N_MEL_CHANNELS)
-
-        self.postnet = PostNet(cfg) if self.use_postnet else None
+        if is_inference:
+            return before_outs, after_outs
+        else:
+            return before_outs, after_outs, d_outs, p_outs, e_outs
 
     def forward(self,
-                src_seq,
-                src_len,
-                mel_len,
-                d_target,
-                p_target,
-                e_target,
-                max_src_len,
-                max_mel_len):
-        src_mask = get_mask_from_lengths(src_len, max_src_len)
-        mel_mask = get_mask_from_lengths(mel_len, max_mel_len)
+                xs: torch.FloatTensor,
+                ilens: torch.LongTensor,
+                ys: torch.FloatTensor,
+                olens: torch.LongTensor,
+                ds: torch.FloatTensor,
+                ps: torch.FloatTensor,
+                es: torch.FloatTensor):
+        # rm padded part
+        xs = xs[:, :max(ilens)]
+        ys = ys[:, :max(olens)]
+        ds = ds[:, :max(ilens)]
+        ps = ps[:, :max(olens)]
+        es = es[:, :max(olens)]
 
-        encoder_output = self.encoder(src_seq, src_mask)
+        in_masks = make_non_pad_mask(ilens).to(xs.device)
+        out_masks = make_non_pad_mask(olens).unsqueeze(-1).to(ys.device)
+        # ignore spk embedding
 
-        variance_adaptor_output, d_prediction, p_prediction, e_prediction, _, _ = \
-            self.variance_adaptor(encoder_output,
-                                  src_mask,
-                                  mel_mask,
-                                  d_target,
-                                  p_target,
-                                  e_target,
-                                  max_mel_len)
+        before_outs, after_outs, d_outs, p_outs, e_outs = \
+            self._forward(xs, ilens, olens, ds, ps, es, in_masks=in_masks, out_masks=out_masks, is_inference=False)
 
-        decoder_output = self.decoder(variance_adaptor_output, mel_mask)
-        mel_output = self.mel_linear(decoder_output)
+        if self.reduction_factor > 1:
+            olens = olens.new([olen-olen%self.reduction_factor for olen in olens])
+            max_olen = max(olens)
+            ys = ys[:, :max_olen]
 
-        if self.use_postnet:
-            mel_output_postnet = self.postnet(mel_output) + mel_output
+        if self.use_masking:
+            d_outs = d_outs.masked_select(in_masks)
+            ds = ds.masked_select(in_masks)
+            before_outs = before_outs.masked_select(out_masks)
+            after_outs = after_outs.masked_select(out_masks)
+            ys = ys.masked_select(out_masks)
+            p_outs = p_outs.masked_select(out_masks)
+            e_outs = e_outs.masked_select(out_masks)
+            ps = ps.masked_select(out_masks)
+            es = es.masked_select(out_masks)
+
+        # calculate loss
+        if self.postnet is None:
+            l1_loss = F.l1_loss(after_outs, ys)
         else:
-            mel_output_postnet = mel_output
+            l1_loss = F.l1_loss(after_outs, ys) + F.l1_loss(before_outs, ys)
+        duration_loss = self.duration_criterion(d_outs, ds)
+        pitch_loss = self.mse_criterion(p_outs, ps)
+        energy_loss = self.mse_criterion(e_outs, es)
 
-        return mel_output, mel_output_postnet, d_prediction, p_prediction, e_prediction, src_mask, mel_mask, mel_len
+        loss = l1_loss + duration_loss + pitch_loss + energy_loss
+        # report loss
+        report_keys = [
+            {"l1_loss": l1_loss.item()},
+            {"duration_loss": duration_loss.item()},
+            {"pitch_loss": pitch_loss.item()},
+            {"energy_loss": energy_loss.item()},
+            {"loss": loss.item()}
+        ]
 
-    def inference(self,
-                  src_seq,
-                  src_len,
-                  duration_control=1.0,
-                  pitch_control=1.0,
-                  energy_control=1.0
-                  ):
-        src_mask = get_mask_from_lengths(src_len)
+        if self.use_scaled_pos_enc:
+            report_keys += [
+                {"encoder_alpha": self.encoder.embed[-1].alpha.data.item()},
+                {"decoder_alpha": self.decoder.embed[-1].alpha.data.item()},
+            ]
+        self.reporter.report(report_keys)
+        return loss
 
-        encoder_output = self.encoder(src_seq, src_mask)
+    def inference(self, x: torch.LongTensor, y: torch.FloatTensor):
+        ilens = torch.LongTensor([x.shape[0]]).to(x.device)
+        xs = x.unsqueeze(0)
+        in_masks = make_non_pad_mask(ilens).to(xs.device)
+        _, outs = self._forward(xs, ilens, in_masks=in_masks, is_inference=True)
+        return outs[0]
 
-        variance_adaptor_output, duration_prediction, pitch_prediction, energy_prediction, mel_len, mel_mask = \
-            self.variance_adaptor.inference(encoder_output,
-                                            src_mask,
-                                            duration_control,
-                                            pitch_control,
-                                            energy_control)
+    # for reporting attentions
+    def calculate_all_attentions(self,
+                                 xs: torch.FloatTensor,
+                                 ilens: torch.LongTensor,
+                                 ys: torch.FloatTensor,
+                                 olens: torch.LongTensor,
+                                 ds: torch.LongTensor,
+                                 ps: torch.FloatTensor,
+                                 es: torch.FloatTensor):
+        with torch.no_grad():
+            # remove unnecessary padded part
+            xs = xs[:, :max(ilens)]
+            ds = ds[:, :max(ilens)]
+            ys = ys[:, :max(olens)]
+            ps = ps[:, :max(olens)]
+            es = es[:, :max(olens)]
+            in_masks = make_non_pad_mask(ilens).to(xs.device)
+            out_masks = make_non_pad_mask(olens).unsqueeze(-1).to(xs.device)
+            outs = self._forward(xs, ilens, olens, ds, ps, es, in_masks, out_masks, is_inference=False)[0]
 
-        decoder_output = self.decoder(variance_adaptor_output, mel_mask)
-        mel_output = self.mel_linear(decoder_output)
+        att_ws_dict = dict()
+        for name, m in self.named_modules():
+            if isinstance(m, MultiHeadedAttention):
+                atten = m.atten.cpu().numpy()
+                if "encoder" in name:
+                    atten = [a[:, :l, :l] for a, l in zip(atten, ilens.tolist())]
+                elif "decoder" in name:
+                    if "src" in name:
+                        atten = [a[:, :ol, :il] for a, il, ol in zip(atten, ilens.tolist(), olens.tolist())]
+                    elif "self" in name:
+                        atten = [a[:, :l, :l] for a, l in zip(atten, olens.tolist())]
+                    else:
+                        logging.warning(f"unknown attention module: {name}")
+                else:
+                    logging.warning(f"unknown attention module: {name}")
+                att_ws_dict[name] = atten
+        att_ws_dict["predicted_fbank"] = [m[:l].T for m, l in zip(outs.cpu().numpy(), olens.tolist())]
+        return att_ws_dict
 
-        if self.use_postnet:
-            mel_output_postnet = self.postnet(mel_output) + mel_output
-        else:
-            mel_output_postnet = mel_output
+    @property
+    def attention_plot_class(self):
+        return TTSPlot
 
-        return mel_output, mel_output_postnet, duration_prediction, pitch_prediction, \
-            energy_prediction, src_mask, mel_mask, mel_len
-"""
+    @property
+    def base_plot_keys(self):
+        plot_keys = ["loss", "l1_loss", "duration_loss"]
+        if self.use_scaled_pos_enc:
+            plot_keys += ["encoder_alpha", "decoder_alpha"]
+        return plot_keys
+
+
+

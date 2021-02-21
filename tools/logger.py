@@ -3,7 +3,34 @@ import numpy as np
 import matplotlib
 import matplotlib.pylab as plt
 from torch.utils.tensorboard import SummaryWriter
+from chainer.training.extension import Extension
+from chainer.training import Trainer
 matplotlib.use("Agg")
+
+
+class TensorboardLogger(Extension):
+    default_name = "tensorboard_logger"
+
+    def __init__(self, logger, att_reporter=None, entries=None, epoch=0):
+        self._entries = entries
+        self._att_reporter = att_reporter
+        self._logger = logger
+        self._epoch = epoch
+
+    def __call__(self, trainer: Trainer):
+        observation = trainer.observation
+        for k, v in observation.items():
+            if (self._entries is not None) and (k not in self._entries):
+                continue
+            if k is not None and v is not None:
+                if "cupy" in str(type(v)):
+                    v = v.get()
+                if "cupy" in str(type(k)):
+                    k = k.get()
+                self._logger.add_scalar(k, v, trainer.updater.iteration)
+        if self._att_reporter is not None and trainer.updater.get_iterator("main").epoch > self._epoch:
+            self._epoch = trainer.updater.get_iterator("main").epoch
+            self._att_reporter.log_attentions(self._logger, trainer.updater.iteration)
 
 
 # here use the logging method in NVIDIA Tacotron2
@@ -52,4 +79,3 @@ class TensorBoardLogger(SummaryWriter):
 if __name__ == "__main__":
     log_path = "/Users/francis/code/fastspeech2/local_test/log"
     logger = TensorBoardLogger(log_path)
-

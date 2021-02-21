@@ -15,10 +15,6 @@ def pprint_cfg(cfg):
 
 
 def to_namespace_recursive(cfg: dict) -> Namespace:
-    """
-    :param cfg: config file parsed from yaml
-    :return: namespace for convinience
-    """
     ns = Namespace()
     kv = vars(ns)
     for k, v in cfg.items():

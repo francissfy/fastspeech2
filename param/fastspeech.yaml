@@ -2,6 +2,45 @@
 adim: 384
 # number of heads for multi head attention
 aheads: 4
-# number of encoder layers
+
+positionwise_layer_type: "linear"
+positionwise_conv_kernel_size: 3
+# encoder
+eunits: 1536
 elayers: 6
-#
+transformer_enc_dropout_rate: 0.0
+transformer_enc_positional_dropout_rate: 0.0
+transformer_enc_atten_dropout_rate: 0.0
+encoder_normalized_before: True
+encoder_concat_after: False
+# variance
+pitch_embed_kernel_size: 1
+pitch_embed_dropout: 0.0
+energy_embed_kernel_size: 1
+energy_embed_dropout: 0.0
+duration_predictor_layers: 2
+duration_predictor_chans: 256
+duration_predictor_kernel_size: 3
+duration_predictor_dropout_rate: 0.1
+# decoder
+dlayers: 6
+dunits: 1536
+transformer_dec_dropout_rate: 0.1
+transformer_dec_positional_dropout_rate: 0.1
+transformer_dec_atten_dropout_rate: 0.1
+decoder_normalized_before: False
+decoder_concat_after: False
+reduction_factor: 1
+# postnet
+postnet_layers: 5
+postnet_filts: 5
+postnet_chans: 256
+postnet_dropout_rate: 0.5
+# init
+transformer_init: "pytorch"
+initial_encoder_alpha: 1.0
+initial_decoder_alpha: 1.0
+# other
+use_masking: True
+use_batch_norm: True
+use_scaled_pos_enc: True

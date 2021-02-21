@@ -1,6 +1,6 @@
 import os
 from tqdm import tqdm
-from kaldi_io.kaldi_io import read_mat_scp, write_mat, open_or_fd
+from kaldi_io.kaldi_io import read_mat_scp, write_mat, open_or_fd, read_mat
 
 """
 decode the data from kaldi align
@@ -78,7 +78,7 @@ def preprocess_kaldi_scp(kaldi_scp, fixed_scp, ark_base_dir):
 
 
 if __name__ == "__main__":
-    kaldi_scp = "/Users/francis/code/fastspeech2/local_test/mel/feats.1.scp"
-    fixed_kaldi_scp = "/Users/francis/code/fastspeech2/local_test/mel/fixed_feats.1.scp"
-    ark_base = "/Users/francis/code/fastspeech2/local_test/mel/"
-    preprocess_kaldi_scp(kaldi_scp, fixed_kaldi_scp, ark_base)
+    fixed_kaldi_scp = "/Users/francis/code/fastspeech2/local_test/variance/feats.1.ark:7"
+    data = read_mat(fixed_kaldi_scp)
+    print("hello")
+
